@@ -336,52 +336,23 @@ def eliminarEstudio(id):
         "Mensaje" : "Estudio eliminado correctamente"
     }
 
-@app.route("/api/registrarexperiencia/<int:id>/experiencias", methods=["POST"])
-def registrarExperiencia(id):
-    datos = request.get_json()
 
-    Empresa = datos["Empresa"]
-    Cargo = datos["Cargo"]
-    Tiempo = datos["Tiempo"]
-    Funciones = datos["Funciones"]
-
-    conexion = conectar_bd()
-    cursor = conexion.cursor()
-
-    sql = "INSERT INTO Experiencias (hoja_vida_id, Empresa, Cargo, Tiempo, Funciones) VALUES (%s, %s, %s, %s, %s)"
-    valores = (
-        id,
-        Empresa,
-        Cargo,
-        Tiempo,
-        Funciones
-    )
-    cursor.execute(sql,valores)
-    conexion.commit()
-
-    cursor.close()
-    conexion.close()
-
-    return{
-        "Mensaje" : "Experiencia registrada satisfactoriamente"
-    }
 
 @app.route("/api/consultarexperiencia/<int:id>/experiencias", methods=["GET"])
-def obtenerexperiencia():
+def obtenerexperiencia(id):  # <-- Agrega 'id' aquí como argumento de la función
     conexion = conectar_bd()
     cursor = conexion.cursor(dictionary=True)
 
     sql = "SELECT * FROM Experiencias WHERE hoja_vida_id = %s"
-    cursor.execute(sql,(id,))
+    cursor.execute(sql, (id,))
     experiencia = cursor.fetchall()
 
     cursor.close()
     conexion.close()
 
-    return{
-        "Mensaje" : experiencia
+    return {
+        "Mensaje": experiencia
     }
-
 @app.route("/api/experiencia/<int:id>", methods=["GET"])
 def obtenerExperiencia(id):
     conexion = conectar_bd()
@@ -479,30 +450,76 @@ def obtenerHabilidades(id):
         "Habilidades": habilidades
     }
 
-@app.route("/api/registrarhabilidad/<int:id>/habilidades", methods=["POST"])
-def registrarHabilidad(id):
+@app.route("/api/registrarexperiencia/<int:id>/experiencias", methods=["POST"])
+def registrarExperienciahv(id):
 
     datos = request.get_json()
 
-    Nombre = datos["Nombre"]
+    Empresa = datos["Empresa"]
+    Cargo = datos["Cargo"]
+    Tiempo = datos["Tiempo"]
+    Funciones = datos["Funciones"]
 
     conexion = conectar_bd()
     cursor = conexion.cursor()
 
-    sql = "INSERT INTO Habilidades (experiencia_id, Nombre) VALUES (%s, %s)"
+    sql = "INSERT INTO Experiencias (hoja_vida_id, Empresa, Cargo, Tiempo, Funciones) VALUES (%s, %s, %s, %s, %s)"
+
     valores = (
         id,
-        Nombre
+        Empresa,
+        Cargo,
+        Tiempo,
+        Funciones
     )
 
     cursor.execute(sql, valores)
     conexion.commit()
 
+    experiencia_id = cursor.lastrowid
+
+    print("🔥 ID DE EXPERIENCIA CREADA:", experiencia_id)
+
     cursor.close()
     conexion.close()
 
     return {
-        "Mensaje": "Habilidad registrada correctamente"
+    "Mensaje": "Experiencia registrada satisfactoriamente",
+    "id": experiencia_id
+}
+
+@app.route("/api/registrarhabilidad/<int:id>/habilidades", methods=["POST"])
+def registrarHabilidad(id):
+
+    datos = request.get_json()
+
+    Nombre = datos.get("Nombre")
+    if not Nombre:
+        return {
+            "Mensaje": "No se recibio el nombre de la habilidad"
+        }
+
+    conexion = conectar_bd()
+    cursor = conexion.cursor()
+
+    sql = """
+        INSERT INTO Habilidades (experiencia_id, Nombre)
+        VALUES (%s, %s)
+    """
+
+    valores = (id, Nombre)
+
+    cursor.execute(sql, valores)
+    conexion.commit()
+
+    habilidad_id = cursor.lastrowid
+
+    cursor.close()
+    conexion.close()
+
+    return {
+        "Mensaje": "Habilidad registrada correctamente",
+        "id": habilidad_id
     }
 
 @app.route("/api/actualizarhabilidad/<int:id>", methods=["PUT"])

@@ -1,8 +1,39 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from database import conectar_bd
 from flask_cors import CORS
+from dotenv import load_dotenv
+import os
+load_dotenv()
+from flask_jwt_extended import(
+    JWTManager,
+    create_access_token,
+    jwt_required,
+    get_jwt_identity,
+    get_jwt
+)
+from werkzeug.security import(
+    generate_password_hash,
+    check_password_hash)
+from functools import wraps
 app = Flask(__name__)
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
+if not app.config["JWT_SECRET_KEY"]:
+    raise RuntimeError("NO SE ENCONTRO LA LLAVE JWT")
+jwt = JWTManager(app)
 CORS(app)
+
+def rol_requerido(rol):
+    def decorador(funcion):
+        @wraps(funcion)
+        @jwt_required()
+        def wrapper(*arg,**kwargs):
+            claims = get_jwt()
+
+            if claims.get("rol") != rol:
+                return jsonify({"Mensaje": "No tiene permiso para ingresar"}), 403
+            return funcion(*arg,**kwargs)
+        return wrapper
+    return decorador
 
 @app.route("/")
 def inicio():
@@ -17,6 +48,99 @@ def probar_data():
             "Mensaje":"Conexion ok"
         }
     
+@app.route("/api/registrarusuario", methods=["POST"])
+def registroUsuario():
+    datos = request.get_json()
+
+    nombre = datos.get("nombre")
+    correo = datos.get("correo")
+    password = datos.get("password")
+
+    conexion = conectar_bd()
+    cursor = conexion.cursor()
+
+    # Verificar si el correo ya existe
+    sqlbuscar = "SELECT id FROM usuarios WHERE Correo = %s"
+    cursor.execute(sqlbuscar, (correo,))
+    usuario = cursor.fetchone()
+
+    if usuario:
+        cursor.close()
+        conexion.close()
+
+        return jsonify({
+            "mensaje": "El correo ya está registrado"
+        })
+
+    # Guardar usuario
+    sql = """INSERT INTO usuarios (Nombre, Correo, password, rol, estado) VALUES (%s, %s, %s, %s, %s)"""
+
+    password_hash = generate_password_hash(password)
+    valores = (nombre, correo, password_hash, "usuario", 1)
+
+    cursor.execute(sql, valores)
+    conexion.commit()
+
+    cursor.close()
+    conexion.close()
+
+    return jsonify({
+        "mensaje": "Usuario registrado correctamente"
+    })
+
+@app.route("/api/login/", methods=["POST"])
+def login():
+    datos = request.get_json()
+    if not datos:
+        return jsonify({"Mensaje":"Datos incompletos"}), 400
+
+    Correo = datos.get("Correo","").strip().lower()
+    password = datos.get("password","")
+
+    if not Correo or not password:
+        return jsonify ({"Mensaje": "Ingrese correo y contraseña"}), 400
+
+    conexion = conectar_bd()
+    cursor = conexion.cursor(dictionary=True)
+    try:
+        #Buscar usuario por correo
+        sql = "SELECT id, Nombre, Correo, password, rol, Estado FROM Usuarios WHERE LOWER(TRIM(Correo)) = %s"
+        cursor.execute(sql,(Correo,))
+        usuario = cursor.fetchone()
+
+        print("Correo buscado:", repr(Correo))
+        print("Usuario encontrado:", usuario is not None)
+        if usuario:
+            print("Clave coincide:", check_password_hash(usuario["password"], password))
+            
+        # Verificar si existe el usuario
+        if not usuario:
+            return jsonify({"Mensaje": "Correo y/o contraseña incorrecta"}), 401
+
+        # Verificar el estado
+        if not usuario["Estado"]:
+            return jsonify({"Mensaje":"La cuenta esta desactivada"}), 403
+
+        # Verificar contraseña cifrada
+        if not check_password_hash(usuario["password"], password):
+            return jsonify({"Mensaje":"Correo y/o contraseña incorrecta"}), 401
+
+        # Generar el token
+        token = create_access_token(identity=str(usuario["id"]),
+                                    additional_claims={"rol":usuario["rol"]})
+
+        # Respuesta
+        return jsonify({"Mensaje":"Inicio de sesion correcto",
+                       "token":token,
+                       "usuario":{"id":usuario["id"],
+                                  "Nombre":usuario["Nombre"],
+                                  "Correo":usuario["Correo"],
+                                  "rol":usuario["rol"]} }), 200
+
+    finally:
+        cursor.close()
+        conexion.close()
+
 @app.route("/api/registrohv", methods = ["POST"])
 def registrohojavida():
     conexion = conectar_bd()
@@ -58,12 +182,14 @@ def registrohojavida():
     }
 
 @app.route("/api/hojas-vida/<int:id>")
+@jwt_required()
 def obtener_hojasvidaid(id):
     return{
         "Mensaje":"Hoja de vida encontrada","id":id
     }
 
 @app.route("/api/hoja-vida")
+@jwt_required()
 def obtener_hojasvida():
     #return{
         #  "Mensaje":"Listado de hojas de vida"
@@ -116,21 +242,63 @@ def obtener_hojasvida():
     ]
     return hojas_vida
 
-@app.route("/api/listarhv")
+@app.route("/api/listarhv", methods=["GET"])
+@jwt_required()
 def listar_hojasvida():
+    usuario_id = get_jwt_identity()
+    rol = (get_jwt().get("rol") or "").lower()
+
     conexion = conectar_bd()
     cursor = conexion.cursor(dictionary=True)
+    try:
+        # El reclutador ve todas (igual que ya te funciona)
+        if rol == "reclutador":
+            cursor.execute("SELECT * FROM hojas_vida")
+            return jsonify(cursor.fetchall()), 200
 
-    sql = "SELECT * FROM Hojas_vida"
-    cursor.execute(sql)
+        # El aprendiz ve su hoja completa
+        if rol == "aprendiz":
+            cursor.execute("""
+                SELECT h.*
+                FROM hojas_vida h
+                JOIN Usuarios u ON LOWER(TRIM(u.Correo)) = LOWER(TRIM(h.correo))
+                WHERE u.id = %s
+            """, (usuario_id,))
+            hoja_vida = cursor.fetchone()
 
-    hojas_vida = cursor.fetchall()
-    cursor.close()
-    conexion.close()
+            if not hoja_vida:
+                return jsonify({"Mensaje": "No tienes hoja de vida registrada"}), 404
 
-    return hojas_vida
+            hv_id = hoja_vida["id"]
+
+            cursor.execute("SELECT * FROM Estudios WHERE hoja_vida_id = %s", (hv_id,))
+            estudios = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM Cursos WHERE hoja_vida_id = %s", (hv_id,))
+            cursos = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM Experiencias WHERE hoja_vida_id = %s", (hv_id,))
+            experiencias = cursor.fetchall()
+
+            # Cada experiencia lleva sus habilidades
+            for exp in experiencias:
+                cursor.execute("SELECT * FROM Habilidades WHERE experiencia_id = %s", (exp["id"],))
+                exp["Habilidades"] = cursor.fetchall()
+
+            return jsonify({
+                "Datos_personales": hoja_vida,
+                "Estudios": estudios,
+                "Cursos": cursos,
+                "Experiencias": experiencias
+            }), 200
+
+        return jsonify({"Mensaje": "Rol no autorizado"}), 403
+    finally:
+        cursor.close()
+        conexion.close()
 
 @app.route("/api/consultahv/<int:id>", methods=["GET"])
+@rol_requerido("Reclutador")
 def obtener_hvida(id):
     conexion = conectar_bd()
     cursor = conexion.cursor(dictionary=True)
